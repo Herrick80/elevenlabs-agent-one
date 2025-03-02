@@ -8,6 +8,12 @@ app = FastAPI()
 def read_root() -> dict[str, str]:
     return {}
 
+@app.get("/test/route")
+def read_root() -> dict[str, str]:
+    return {
+        "message": "Hello World"
+    }
+
 @app.post("/agent/take-note")
 async def take_note(request: Request) -> dict[str, str]:
     request_body = await request.json()
@@ -27,7 +33,7 @@ async def search(request: Request) -> dict[str, str]:
 @app.get("/agent/get-note")
 async def get_note(request: Request) -> dict[str, str]:
     note = get_note_from_db()
-    print("got note:", note)
+
     return {
         "note": note
     }

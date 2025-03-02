@@ -65,4 +65,8 @@ def query_perplexity(query: str):
 
 def search_from_query(note: str) -> str:
     result = query_perplexity(note)
-    return result
+
+    if result:
+        return result
+    else:
+        return "couldn't find any relevant note"

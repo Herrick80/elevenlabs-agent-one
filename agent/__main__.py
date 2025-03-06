@@ -11,7 +11,7 @@ def read_root() -> dict[str, str]:
 @app.get("/test/route")
 def read_root() -> dict[str, str]:
     return {
-        "message": "Hello, We are going to tell ya when the best times to fish for striped bass are based on the moon and the tides"
+        "message": "Hello, We are going to tell ya when the best times to fish for striped bass are based on the moon and the tides if that's ok with you"
     }
 
 @app.post("/agent/take-note")

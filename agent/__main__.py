@@ -53,26 +53,38 @@ def read_root() -> dict[str, str]:
 @app.post("/user/info")
 async def collect_user_info(request: Request) -> dict[str, str]:
     try:
-        # Get the raw request data and log it
-        request_body = await request.json()
-        logger.info(f"Received request body: {json.dumps(request_body)}")
+        # Get raw request body first
+        raw_body = await request.body()
+        logger.info(f"Raw request body: {raw_body}")
         
-        # Extract the message from various possible fields
+        # Try to get the message content
         message = None
-        if isinstance(request_body, dict):
-            message = (
-                request_body.get('text') or 
-                request_body.get('message') or 
-                request_body.get('input') or 
-                request_body.get('query')
-            )
-        if not message and isinstance(request_body, (str, dict)):
-            message = str(request_body)
+        try:
+            # Try to parse as JSON first
+            request_body = await request.json()
+            logger.info(f"Parsed JSON body: {json.dumps(request_body)}")
+            
+            if isinstance(request_body, dict):
+                message = (
+                    request_body.get('text') or 
+                    request_body.get('message') or 
+                    request_body.get('input') or 
+                    request_body.get('query') or
+                    request_body.get('content')
+                )
+            if not message:
+                # If no message field found, try using the entire body
+                message = json.dumps(request_body)
+        except json.JSONDecodeError:
+            # If not JSON, treat the raw body as text
+            message = raw_body.decode('utf-8')
+            logger.info(f"Using raw body as message: {message}")
         
         if not message:
+            logger.error("No message content found in request")
             raise HTTPException(
                 status_code=400,
-                detail="I couldn't find any message in your request. Could you please tell me your name and where you'd like to fish?"
+                detail="I couldn't find any message in your request. Could you please tell me your name and where you'd like to fish? For example: 'My name is John and I like to fish on Cape Cod'"
             )
             
         logger.info(f"Processing message: {message}")
@@ -80,18 +92,27 @@ async def collect_user_info(request: Request) -> dict[str, str]:
         # Extract name and location using various patterns
         first_name = None
         fishing_location = None
-        
-        # Extract name
         message_lower = message.lower()
+        
+        # Extract name using multiple patterns
         if "name is" in message_lower:
             name_part = message_lower.split("name is")[1]
             # Split on common separators
-            for separator in ["and", ",", ".", "i"]:
+            for separator in ["and", ",", ".", "i", "like"]:
+                if separator in name_part:
+                    name_part = name_part.split(separator)[0]
+            first_name = name_part.strip().title()
+        elif "i am" in message_lower:
+            name_part = message_lower.split("i am")[1]
+            for separator in ["and", ",", ".", "i", "like"]:
                 if separator in name_part:
                     name_part = name_part.split(separator)[0]
             first_name = name_part.strip().title()
         
-        # Extract location
+        logger.info(f"Extracted name: {first_name}")
+        
+        # Extract location using multiple patterns
+        loc_part = None
         if "fish" in message_lower:
             if "on" in message_lower:
                 loc_part = message_lower.split("on")[1]
@@ -99,18 +120,21 @@ async def collect_user_info(request: Request) -> dict[str, str]:
                 loc_part = message_lower.split("in")[1]
             elif "at" in message_lower:
                 loc_part = message_lower.split("at")[1]
-            
-            if loc_part:
-                # Handle location with state
-                parts = loc_part.strip().split(",")
-                fishing_location = parts[0].strip().title()
-                if len(parts) > 1:
-                    fishing_location += ", " + parts[1].strip().title()
         
-        logger.info(f"Extracted first_name: {first_name}, fishing_location: {fishing_location}")
+        if loc_part:
+            # Handle location with state/region
+            parts = loc_part.strip().split(",")
+            fishing_location = parts[0].strip().title()
+            if len(parts) > 1:
+                fishing_location += ", " + parts[1].strip().title()
+            
+            # Clean up common issues
+            fishing_location = fishing_location.replace(".", "").strip()
+            logger.info(f"Extracted location: {fishing_location}")
         
         # Validate the extracted data
         if not first_name or not fishing_location:
+            logger.error(f"Failed to extract required fields. Name: {first_name}, Location: {fishing_location}")
             raise HTTPException(
                 status_code=400,
                 detail="I couldn't quite catch your name or fishing location. Could you please tell me your name and where you'd like to fish? For example: 'My name is John and I like to fish on Cape Cod'"
@@ -131,14 +155,6 @@ async def collect_user_info(request: Request) -> dict[str, str]:
         logger.info(f"Returning message: {response_message}")
         return {"message": response_message}
             
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error: {str(e)}")
-        raise HTTPException(
-            status_code=400,
-            detail="I couldn't understand the message format. Could you try telling me your name and where you'd like to fish again? For example: 'My name is John and I like to fish on Cape Cod'"
-        )
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(

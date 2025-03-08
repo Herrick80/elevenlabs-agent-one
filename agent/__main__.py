@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from datetime import datetime, timedelta
 
 from agent.helpers import (
@@ -18,6 +18,26 @@ class UserInfo(BaseModel):
     first_name: str
     fishing_location: str
 
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "first_name": "John",
+                "fishing_location": "Cape Cod"
+            }
+        }
+
+    @validator('first_name')
+    def validate_first_name(cls, v):
+        if not v.strip():
+            raise ValueError('First name cannot be empty')
+        return v.strip()
+
+    @validator('fishing_location')
+    def validate_fishing_location(cls, v):
+        if not v.strip():
+            raise ValueError('Fishing location cannot be empty')
+        return v.strip()
+
 @app.get("/")
 def read_root() -> dict[str, str]:
     return {
@@ -25,29 +45,38 @@ def read_root() -> dict[str, str]:
     }
 
 @app.post("/user/info")
-async def collect_user_info(user_info: UserInfo) -> dict[str, str]:
-    # Validate input data
-    if not user_info.first_name or not user_info.fishing_location:
-        raise HTTPException(
-            status_code=400,
-            detail="Both first name and fishing location are required"
-        )
-    
-    # Save user info to database
+async def collect_user_info(request: Request) -> dict[str, str]:
     try:
-        if save_user_info(user_info.first_name, user_info.fishing_location):
+        # Get the raw request data
+        request_body = await request.json()
+        
+        # Extract first name and fishing location from request body
+        first_name = request_body.get('first_name', '')
+        fishing_location = request_body.get('fishing_location', '')
+        
+        # Validate the data
+        if not first_name or not fishing_location:
+            raise HTTPException(
+                status_code=400,
+                detail="Please provide both your first name and fishing location"
+            )
+        
+        # Save user info to database
+        if save_user_info(first_name, fishing_location):
             return {
-                "message": f"Hey {user_info.first_name}! Great to meet you. I know {user_info.fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
+                "message": f"Hey {first_name}! Great to meet you. I know {fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
             }
         else:
             raise HTTPException(
                 status_code=500,
                 detail="Failed to save user information"
             )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"An error occurred while saving user information: {str(e)}"
+            detail=f"An error occurred while processing your information: {str(e)}"
         )
 
 @app.get("/test/route")

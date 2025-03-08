@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel, validator
 from datetime import datetime, timedelta
+import logging
+import json
 
 from agent.helpers import (
     get_note_from_db,
@@ -11,6 +13,10 @@ from agent.helpers import (
     get_noaa_station_data,
     get_tide_predictions
 )
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -47,36 +53,86 @@ def read_root() -> dict[str, str]:
 @app.post("/user/info")
 async def collect_user_info(request: Request) -> dict[str, str]:
     try:
-        # Get the raw request data
+        # Get the raw request data and log it
         request_body = await request.json()
+        logger.info(f"Received request body: {json.dumps(request_body)}")
         
-        # Extract first name and fishing location from request body
-        first_name = request_body.get('first_name', '')
-        fishing_location = request_body.get('fishing_location', '')
+        # Handle both structured and unstructured input
+        if isinstance(request_body, dict):
+            first_name = request_body.get('first_name', '')
+            fishing_location = request_body.get('fishing_location', '')
+            
+            # If we don't have the fields, check for a text or message field
+            if not first_name or not fishing_location:
+                message = request_body.get('text', '') or request_body.get('message', '') or request_body.get('input', '')
+                if message:
+                    # Try to extract name and location from natural language
+                    if "name is" in message.lower():
+                        first_name = message.lower().split("name is")[1].split()[0].strip().title()
+                    if "fishing" in message.lower() and "in" in message.lower():
+                        fishing_location = message.lower().split("fishing")[1].split("in")[1].strip().title()
+                    elif "go fishing" in message.lower():
+                        fishing_location = message[message.lower().find("go fishing"):].split("on")[1].strip().title()
+        else:
+            # Handle string input
+            message = str(request_body)
+            if "name is" in message.lower():
+                first_name = message.lower().split("name is")[1].split()[0].strip().title()
+            if "fishing" in message.lower() and "in" in message.lower():
+                fishing_location = message.lower().split("fishing")[1].split("in")[1].strip().title()
+            elif "go fishing" in message.lower():
+                fishing_location = message[message.lower().find("go fishing"):].split("on")[1].strip().title()
+
+        logger.info(f"Extracted first_name: {first_name}, fishing_location: {fishing_location}")
+        
+        # Clean up the extracted data
+        first_name = first_name.strip().replace(',', '').replace('.', '')
+        fishing_location = fishing_location.strip().replace(',', '').replace('.', '')
         
         # Validate the data
         if not first_name or not fishing_location:
+            logger.error("Missing required fields")
             raise HTTPException(
                 status_code=400,
-                detail="Please provide both your first name and fishing location"
+                detail="I couldn't quite catch your name or fishing location. Could you please tell me your name and where you'd like to fish?"
             )
         
-        # Save user info to database
-        if save_user_info(first_name, fishing_location):
-            return {
-                "message": f"Hey {first_name}! Great to meet you. I know {fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
-            }
-        else:
+        try:
+            # Try to save user info to database
+            logger.info(f"Attempting to save user info to database for {first_name} at {fishing_location}")
+            save_result = save_user_info(first_name, fishing_location)
+            logger.info(f"Save result: {save_result}")
+            
+            if save_result:
+                response_message = f"Hey {first_name}! Great to meet you. I know {fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
+                logger.info(f"Successfully processed request. Returning message: {response_message}")
+                return {
+                    "message": response_message
+                }
+            else:
+                logger.error("Database save returned False")
+                raise HTTPException(
+                    status_code=500,
+                    detail="I had trouble saving your information. Could you try telling me again?"
+                )
+        except Exception as db_error:
+            logger.error(f"Database error: {str(db_error)}")
             raise HTTPException(
                 status_code=500,
-                detail="Failed to save user information"
+                detail="I had trouble with my fishing log. Could you try telling me your name and location again?"
             )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail="I couldn't understand the message format. Could you try telling me your name and where you'd like to fish again?"
+        )
     except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"An error occurred while processing your information: {str(e)}"
+            detail="Something went wrong with my fishing log. Could you try telling me your name and location one more time?"
         )
 
 @app.get("/test/route")

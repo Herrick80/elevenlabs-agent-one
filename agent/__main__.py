@@ -58,36 +58,33 @@ async def collect_user_info(request: Request) -> dict[str, str]:
         logger.info(f"Received request body: {json.dumps(request_body)}")
         
         # Handle both structured and unstructured input
+        first_name = ''
+        fishing_location = ''
+        
         if isinstance(request_body, dict):
+            # Try to get direct fields first
             first_name = request_body.get('first_name', '')
             fishing_location = request_body.get('fishing_location', '')
             
-            # If we don't have the fields, check for a text or message field
+            # If direct fields aren't present, look for message field
             if not first_name or not fishing_location:
                 message = request_body.get('text', '') or request_body.get('message', '') or request_body.get('input', '')
                 if message:
+                    logger.info(f"Processing message: {message}")
                     # Try to extract name and location from natural language
                     if "name is" in message.lower():
-                        first_name = message.lower().split("name is")[1].split()[0].strip().title()
-                    if "fishing" in message.lower() and "in" in message.lower():
-                        fishing_location = message.lower().split("fishing")[1].split("in")[1].strip().title()
-                    elif "go fishing" in message.lower():
-                        fishing_location = message[message.lower().find("go fishing"):].split("on")[1].strip().title()
-        else:
-            # Handle string input
-            message = str(request_body)
-            if "name is" in message.lower():
-                first_name = message.lower().split("name is")[1].split()[0].strip().title()
-            if "fishing" in message.lower() and "in" in message.lower():
-                fishing_location = message.lower().split("fishing")[1].split("in")[1].strip().title()
-            elif "go fishing" in message.lower():
-                fishing_location = message[message.lower().find("go fishing"):].split("on")[1].strip().title()
-
+                        first_name = message.lower().split("name is")[1].split("and")[0].strip().title()
+                    if "fish" in message.lower() and "on" in message.lower():
+                        parts = message.lower().split("on")[1].strip().split(",")
+                        fishing_location = parts[0].strip().title()
+                        if len(parts) > 1:
+                            fishing_location += ", " + parts[1].strip().title()
+        
         logger.info(f"Extracted first_name: {first_name}, fishing_location: {fishing_location}")
         
         # Clean up the extracted data
         first_name = first_name.strip().replace(',', '').replace('.', '')
-        fishing_location = fishing_location.strip().replace(',', '').replace('.', '')
+        fishing_location = fishing_location.strip().rstrip(',').rstrip('.')
         
         # Validate the data
         if not first_name or not fishing_location:
@@ -97,30 +94,20 @@ async def collect_user_info(request: Request) -> dict[str, str]:
                 detail="I couldn't quite catch your name or fishing location. Could you please tell me your name and where you'd like to fish?"
             )
         
-        try:
-            # Try to save user info to database
-            logger.info(f"Attempting to save user info to database for {first_name} at {fishing_location}")
-            save_result = save_user_info(first_name, fishing_location)
-            logger.info(f"Save result: {save_result}")
-            
-            if save_result:
-                response_message = f"Hey {first_name}! Great to meet you. I know {fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
-                logger.info(f"Successfully processed request. Returning message: {response_message}")
-                return {
-                    "message": response_message
-                }
-            else:
-                logger.error("Database save returned False")
-                raise HTTPException(
-                    status_code=500,
-                    detail="I had trouble saving your information. Could you try telling me again?"
-                )
-        except Exception as db_error:
-            logger.error(f"Database error: {str(db_error)}")
-            raise HTTPException(
-                status_code=500,
-                detail="I had trouble with my fishing log. Could you try telling me your name and location again?"
-            )
+        # Try to save user info to database
+        logger.info(f"Attempting to save user info to database for {first_name} at {fishing_location}")
+        save_result = save_user_info(first_name, fishing_location)
+        
+        # Even if save fails, we can still provide fishing information
+        response_message = f"Hey {first_name}! Great to meet you. I know {fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
+        
+        if not save_result:
+            # Add a note about temporary issue but don't block the response
+            logger.warning("Failed to save user info but continuing with response")
+            response_message += "\n\n(Note: I'm having a little trouble with my fishing log, but I can still help you find the best fishing times!)"
+        
+        logger.info(f"Returning message: {response_message}")
+        return {"message": response_message}
             
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error: {str(e)}")

@@ -1,5 +1,6 @@
 from pymongo.synchronous.mongo_client import MongoClient
-
+from pymongo.errors import ConnectionFailure, OperationFailure
+import logging
 
 from typing import Any, Dict, Optional
 
@@ -12,19 +13,48 @@ import datetime
 
 _ = load_dotenv()
 
-MONGO_URI: str | None = os.getenv("MONGODB_URI")    
-client = MongoClient(MONGO_URI)
-db = client['eleven_labs_assistant']
-notes_collection = db['notes']
-users_collection = db['users']
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+MONGO_URI: str | None = os.getenv("MONGODB_URI")
+
+try:
+    if not MONGO_URI:
+        raise ValueError("MONGODB_URI environment variable is not set")
+    
+    client = MongoClient(MONGO_URI)
+    # Test the connection
+    client.admin.command('ping')
+    db = client['eleven_labs_assistant']
+    notes_collection = db['notes']
+    users_collection = db['users']
+    logger.info("Successfully connected to MongoDB")
+except (ConnectionFailure, OperationFailure, ValueError) as e:
+    logger.error(f"Failed to connect to MongoDB: {str(e)}")
+    # Initialize to None so we can check if DB is available
+    client = None
+    db = None
+    notes_collection = None
+    users_collection = None
 
 def save_user_info(first_name: str, fishing_location: str) -> bool:
-    result = users_collection.insert_one({
-        "first_name": first_name,
-        "fishing_location": fishing_location,
-        "created_at": datetime.datetime.utcnow()
-    })
-    return bool(result.inserted_id)
+    try:
+        if not users_collection:
+            logger.error("Database connection not available")
+            return False
+            
+        result = users_collection.insert_one({
+            "first_name": first_name,
+            "fishing_location": fishing_location,
+            "created_at": datetime.datetime.utcnow()
+        })
+        success = bool(result.inserted_id)
+        logger.info(f"Successfully saved user info: {success}")
+        return success
+    except Exception as e:
+        logger.error(f"Error saving user info: {str(e)}")
+        return False
 
 def save_note(note: str) -> bool:
     result = notes_collection.insert_one({"note": note})

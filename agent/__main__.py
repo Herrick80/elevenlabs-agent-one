@@ -21,21 +21,34 @@ class UserInfo(BaseModel):
 @app.get("/")
 def read_root() -> dict[str, str]:
     return {
-        "message": "Welcome! I'm Grandpa Spuds Oakley, your friendly AI fishing guide. Please share your first name and where you'd like to go fishing by making a POST request to /user/info. I'll help you find the best times to catch striped bass based on moon phases and tides!"
+        "message": "Welcome! I'm Grandpa Spuds Oakley, your friendly AI fishing guide. Please share your first name and where you'd like to go fishing. I'll help you find the best times to catch striped bass based on moon phases and tides!"
     }
 
 @app.post("/user/info")
 async def collect_user_info(user_info: UserInfo) -> dict[str, str]:
+    # Validate input data
+    if not user_info.first_name or not user_info.fishing_location:
+        raise HTTPException(
+            status_code=400,
+            detail="Both first name and fishing location are required"
+        )
+    
     # Save user info to database
-    if save_user_info(user_info.first_name, user_info.fishing_location):
-        return {
-            "message": f"Hey {user_info.first_name}! Great to meet you. I know {user_info.fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
-        }
-    else:
-        return {
-            "message": "Sorry, I had trouble saving your information. Please try again.",
-            "status": "error"
-        }
+    try:
+        if save_user_info(user_info.first_name, user_info.fishing_location):
+            return {
+                "message": f"Hey {user_info.first_name}! Great to meet you. I know {user_info.fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save user information"
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while saving user information: {str(e)}"
+        )
 
 @app.get("/test/route")
 def read_root() -> dict[str, str]:

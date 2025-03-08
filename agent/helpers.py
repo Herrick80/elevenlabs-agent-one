@@ -1,15 +1,13 @@
 from pymongo.synchronous.mongo_client import MongoClient
 from pymongo.errors import ConnectionFailure, OperationFailure
 import logging
-
 from typing import Any, Dict, Optional
-
-
 import os
 from dotenv import load_dotenv
 from pymongo import DESCENDING, MongoClient
 import requests
 import datetime
+import json
 
 _ = load_dotenv()
 
@@ -17,33 +15,41 @@ _ = load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-MONGO_URI: str | None = os.getenv("MONGODB_URI")
+# Global flag to track if we should try database operations
+DATABASE_AVAILABLE = False
 
-try:
-    if not MONGO_URI:
-        raise ValueError("MONGODB_URI environment variable is not set")
+def init_database():
+    global DATABASE_AVAILABLE, client, db, notes_collection, users_collection
     
-    client = MongoClient(MONGO_URI)
-    # Test the connection
-    client.admin.command('ping')
-    db = client['eleven_labs_assistant']
-    notes_collection = db['notes']
-    users_collection = db['users']
-    logger.info("Successfully connected to MongoDB")
-except (ConnectionFailure, OperationFailure, ValueError) as e:
-    logger.error(f"Failed to connect to MongoDB: {str(e)}")
-    # Initialize to None so we can check if DB is available
-    client = None
-    db = None
-    notes_collection = None
-    users_collection = None
+    try:
+        MONGO_URI = os.getenv("MONGODB_URI")
+        if not MONGO_URI:
+            logger.error("MONGODB_URI environment variable is not set")
+            return False
+        
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        # Test the connection
+        client.admin.command('ping')
+        db = client['eleven_labs_assistant']
+        notes_collection = db['notes']
+        users_collection = db['users']
+        DATABASE_AVAILABLE = True
+        logger.info("Successfully connected to MongoDB")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to connect to MongoDB: {str(e)}")
+        DATABASE_AVAILABLE = False
+        return False
+
+# Initialize database connection
+init_database()
 
 def save_user_info(first_name: str, fishing_location: str) -> bool:
+    if not DATABASE_AVAILABLE:
+        logger.warning("Database not available, skipping save operation")
+        return False
+        
     try:
-        if not users_collection:
-            logger.error("Database connection not available")
-            return False
-            
         result = users_collection.insert_one({
             "first_name": first_name,
             "fishing_location": fishing_location,
@@ -112,11 +118,19 @@ def search_from_query(note: str) -> str:
         return "couldn't find any relevant note"
 
 def get_latest_user_info(first_name: str) -> Optional[Dict]:
-    user = users_collection.find_one(
-        {"first_name": first_name},
-        sort=[("created_at", DESCENDING)]
-    )
-    return user
+    if not DATABASE_AVAILABLE:
+        logger.warning("Database not available, cannot retrieve user info")
+        return None
+        
+    try:
+        user = users_collection.find_one(
+            {"first_name": first_name},
+            sort=[("created_at", DESCENDING)]
+        )
+        return user
+    except Exception as e:
+        logger.error(f"Error retrieving user info: {str(e)}")
+        return None
 
 def get_noaa_station_data(location: str) -> Optional[Dict]:
     """

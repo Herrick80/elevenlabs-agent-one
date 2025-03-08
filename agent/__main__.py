@@ -57,54 +57,76 @@ async def collect_user_info(request: Request) -> dict[str, str]:
         request_body = await request.json()
         logger.info(f"Received request body: {json.dumps(request_body)}")
         
-        # Handle both structured and unstructured input
-        first_name = ''
-        fishing_location = ''
-        
+        # Extract the message from various possible fields
+        message = None
         if isinstance(request_body, dict):
-            # Try to get direct fields first
-            first_name = request_body.get('first_name', '')
-            fishing_location = request_body.get('fishing_location', '')
+            message = (
+                request_body.get('text') or 
+                request_body.get('message') or 
+                request_body.get('input') or 
+                request_body.get('query')
+            )
+        if not message and isinstance(request_body, (str, dict)):
+            message = str(request_body)
+        
+        if not message:
+            raise HTTPException(
+                status_code=400,
+                detail="I couldn't find any message in your request. Could you please tell me your name and where you'd like to fish?"
+            )
             
-            # If direct fields aren't present, look for message field
-            if not first_name or not fishing_location:
-                message = request_body.get('text', '') or request_body.get('message', '') or request_body.get('input', '')
-                if message:
-                    logger.info(f"Processing message: {message}")
-                    # Try to extract name and location from natural language
-                    if "name is" in message.lower():
-                        first_name = message.lower().split("name is")[1].split("and")[0].strip().title()
-                    if "fish" in message.lower() and "on" in message.lower():
-                        parts = message.lower().split("on")[1].strip().split(",")
-                        fishing_location = parts[0].strip().title()
-                        if len(parts) > 1:
-                            fishing_location += ", " + parts[1].strip().title()
+        logger.info(f"Processing message: {message}")
+        
+        # Extract name and location using various patterns
+        first_name = None
+        fishing_location = None
+        
+        # Extract name
+        message_lower = message.lower()
+        if "name is" in message_lower:
+            name_part = message_lower.split("name is")[1]
+            # Split on common separators
+            for separator in ["and", ",", ".", "i"]:
+                if separator in name_part:
+                    name_part = name_part.split(separator)[0]
+            first_name = name_part.strip().title()
+        
+        # Extract location
+        if "fish" in message_lower:
+            if "on" in message_lower:
+                loc_part = message_lower.split("on")[1]
+            elif "in" in message_lower:
+                loc_part = message_lower.split("in")[1]
+            elif "at" in message_lower:
+                loc_part = message_lower.split("at")[1]
+            
+            if loc_part:
+                # Handle location with state
+                parts = loc_part.strip().split(",")
+                fishing_location = parts[0].strip().title()
+                if len(parts) > 1:
+                    fishing_location += ", " + parts[1].strip().title()
         
         logger.info(f"Extracted first_name: {first_name}, fishing_location: {fishing_location}")
         
-        # Clean up the extracted data
-        first_name = first_name.strip().replace(',', '').replace('.', '')
-        fishing_location = fishing_location.strip().rstrip(',').rstrip('.')
-        
-        # Validate the data
+        # Validate the extracted data
         if not first_name or not fishing_location:
-            logger.error("Missing required fields")
             raise HTTPException(
                 status_code=400,
-                detail="I couldn't quite catch your name or fishing location. Could you please tell me your name and where you'd like to fish?"
+                detail="I couldn't quite catch your name or fishing location. Could you please tell me your name and where you'd like to fish? For example: 'My name is John and I like to fish on Cape Cod'"
             )
         
-        # Try to save user info to database
-        logger.info(f"Attempting to save user info to database for {first_name} at {fishing_location}")
-        save_result = save_user_info(first_name, fishing_location)
+        # Try to save to database but don't fail if it doesn't work
+        try:
+            save_result = save_user_info(first_name, fishing_location)
+            if not save_result:
+                logger.warning("Failed to save user info but continuing with response")
+        except Exception as e:
+            logger.error(f"Database error: {str(e)}")
+            # Continue even if database save fails
         
-        # Even if save fails, we can still provide fishing information
+        # Construct response message
         response_message = f"Hey {first_name}! Great to meet you. I know {fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
-        
-        if not save_result:
-            # Add a note about temporary issue but don't block the response
-            logger.warning("Failed to save user info but continuing with response")
-            response_message += "\n\n(Note: I'm having a little trouble with my fishing log, but I can still help you find the best fishing times!)"
         
         logger.info(f"Returning message: {response_message}")
         return {"message": response_message}
@@ -113,13 +135,15 @@ async def collect_user_info(request: Request) -> dict[str, str]:
         logger.error(f"JSON decode error: {str(e)}")
         raise HTTPException(
             status_code=400,
-            detail="I couldn't understand the message format. Could you try telling me your name and where you'd like to fish again?"
+            detail="I couldn't understand the message format. Could you try telling me your name and where you'd like to fish again? For example: 'My name is John and I like to fish on Cape Cod'"
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail="Something went wrong with my fishing log. Could you try telling me your name and location one more time?"
+            detail="Something went wrong, but don't worry! Could you try telling me your name and where you'd like to fish one more time? For example: 'My name is John and I like to fish on Cape Cod'"
         )
 
 @app.get("/test/route")

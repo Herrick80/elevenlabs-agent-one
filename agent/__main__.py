@@ -3,6 +3,8 @@ from pydantic import BaseModel, validator
 from datetime import datetime, timedelta
 import logging
 import json
+import traceback
+from typing import Optional
 
 from agent.helpers import (
     get_note_from_db,
@@ -55,16 +57,19 @@ async def collect_user_info(request: Request) -> dict[str, str]:
     try:
         # Get raw request body first
         raw_body = await request.body()
-        logger.info(f"Raw request body: {raw_body}")
+        raw_text = raw_body.decode('utf-8')
+        logger.info(f"Raw request body: {raw_text}")
         
         # Try to get the message content
         message = None
+        
+        # Try to parse as JSON first
         try:
-            # Try to parse as JSON first
             request_body = await request.json()
-            logger.info(f"Parsed JSON body: {json.dumps(request_body)}")
+            logger.info(f"Request body parsed as JSON: {request_body}")
             
             if isinstance(request_body, dict):
+                # Try all possible fields where the message might be
                 message = (
                     request_body.get('text') or 
                     request_body.get('message') or 
@@ -72,94 +77,83 @@ async def collect_user_info(request: Request) -> dict[str, str]:
                     request_body.get('query') or
                     request_body.get('content')
                 )
+            
+            # If we still don't have a message, use the whole body
             if not message:
-                # If no message field found, try using the entire body
-                message = json.dumps(request_body)
+                message = str(request_body)
+                
         except json.JSONDecodeError:
-            # If not JSON, treat the raw body as text
-            message = raw_body.decode('utf-8')
-            logger.info(f"Using raw body as message: {message}")
+            # If JSON parsing fails, use the raw text
+            message = raw_text
+            logger.info("Using raw text as message")
+        
+        logger.info(f"Final message to process: {message}")
         
         if not message:
-            logger.error("No message content found in request")
             raise HTTPException(
                 status_code=400,
-                detail="I couldn't find any message in your request. Could you please tell me your name and where you'd like to fish? For example: 'My name is John and I like to fish on Cape Cod'"
+                detail="I couldn't understand that. Could you try saying something like: 'My name is John and I fish on Long Island Sound'"
             )
-            
-        logger.info(f"Processing message: {message}")
         
-        # Extract name and location using various patterns
-        first_name = None
-        fishing_location = None
+        # Convert to lowercase for parsing
         message_lower = message.lower()
         
-        # Extract name using multiple patterns
+        # Extract name
+        first_name = None
         if "name is" in message_lower:
             name_part = message_lower.split("name is")[1]
-            # Split on common separators
-            for separator in ["and", ",", ".", "i", "like"]:
-                if separator in name_part:
-                    name_part = name_part.split(separator)[0]
-            first_name = name_part.strip().title()
-        elif "i am" in message_lower:
-            name_part = message_lower.split("i am")[1]
-            for separator in ["and", ",", ".", "i", "like"]:
+            # Split on common separators with spaces to avoid partial matches
+            for separator in [" and ", ", ", ". ", " i ", " like "]:
                 if separator in name_part:
                     name_part = name_part.split(separator)[0]
             first_name = name_part.strip().title()
         
         logger.info(f"Extracted name: {first_name}")
         
-        # Extract location using multiple patterns
-        loc_part = None
+        # Extract location
+        fishing_location = None
         if "fish" in message_lower:
-            if "on" in message_lower:
-                loc_part = message_lower.split("on")[1]
-            elif "in" in message_lower:
-                loc_part = message_lower.split("in")[1]
-            elif "at" in message_lower:
-                loc_part = message_lower.split("at")[1]
+            for prep in [" on ", " in ", " at "]:
+                if prep in message_lower:
+                    loc_part = message_lower.split(prep)[1].strip()
+                    # Handle location with state/region
+                    parts = loc_part.split(",")
+                    fishing_location = parts[0].strip().title()
+                    if len(parts) > 1:
+                        fishing_location += ", " + parts[1].strip().title()
+                    break
         
-        if loc_part:
-            # Handle location with state/region
-            parts = loc_part.strip().split(",")
-            fishing_location = parts[0].strip().title()
-            if len(parts) > 1:
-                fishing_location += ", " + parts[1].strip().title()
-            
-            # Clean up common issues
-            fishing_location = fishing_location.replace(".", "").strip()
-            logger.info(f"Extracted location: {fishing_location}")
+        logger.info(f"Extracted location: {fishing_location}")
         
-        # Validate the extracted data
+        # Validate extracted data
         if not first_name or not fishing_location:
             logger.error(f"Failed to extract required fields. Name: {first_name}, Location: {fishing_location}")
             raise HTTPException(
                 status_code=400,
-                detail="I couldn't quite catch your name or fishing location. Could you please tell me your name and where you'd like to fish? For example: 'My name is John and I like to fish on Cape Cod'"
+                detail="I couldn't catch your name or fishing location. Please try saying something like: 'My name is John and I fish on Long Island Sound'"
             )
         
         # Try to save to database but don't fail if it doesn't work
         try:
             save_result = save_user_info(first_name, fishing_location)
             if not save_result:
-                logger.warning("Failed to save user info but continuing with response")
+                logger.warning("Database save failed but continuing")
         except Exception as e:
             logger.error(f"Database error: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             # Continue even if database save fails
         
-        # Construct response message
+        # Return success response
         response_message = f"Hey {first_name}! Great to meet you. I know {fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
-        
-        logger.info(f"Returning message: {response_message}")
+        logger.info(f"Sending response: {response_message}")
         return {"message": response_message}
-            
+        
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
-            detail="Something went wrong, but don't worry! Could you try telling me your name and where you'd like to fish one more time? For example: 'My name is John and I like to fish on Cape Cod'"
+            detail="I'm having trouble understanding that. Could you try saying something like: 'My name is John and I fish on Long Island Sound'"
         )
 
 @app.get("/test/route")

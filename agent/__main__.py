@@ -58,8 +58,8 @@ async def collect_user_info(request: Request) -> dict[str, str]:
         logger.info(f"Received request body: {json.dumps(request_body)}")
         
         # Extract first name and fishing location from request body
-        first_name = request_body.get('first_name', '')
-        fishing_location = request_body.get('fishing_location', '')
+        first_name = request_body.get('name', '')
+        fishing_location = request_body.get('location', '')
         
         logger.info(f"Extracted first_name: {first_name}, fishing_location: {fishing_location}")
         

@@ -3,8 +3,6 @@ from pydantic import BaseModel, validator
 from datetime import datetime, timedelta
 import logging
 import json
-import traceback
-from typing import Optional
 
 from agent.helpers import (
     get_note_from_db,
@@ -55,105 +53,58 @@ def read_root() -> dict[str, str]:
 @app.post("/user/info")
 async def collect_user_info(request: Request) -> dict[str, str]:
     try:
-        # Get raw request body first
-        raw_body = await request.body()
-        raw_text = raw_body.decode('utf-8')
-        logger.info(f"Raw request body: {raw_text}")
+        # Get the raw request data and log it
+        request_body = await request.json()
+        logger.info(f"Received request body: {json.dumps(request_body)}")
         
-        # Try to get the message content
-        message = None
+        # Extract first name and fishing location from request body
+        first_name = request_body.get('first_name', '')
+        fishing_location = request_body.get('fishing_location', '')
         
-        # Try to parse as JSON first
-        try:
-            request_body = await request.json()
-            logger.info(f"Request body parsed as JSON: {request_body}")
-            
-            if isinstance(request_body, dict):
-                # Try all possible fields where the message might be
-                message = (
-                    request_body.get('text') or 
-                    request_body.get('message') or 
-                    request_body.get('input') or 
-                    request_body.get('query') or
-                    request_body.get('content')
-                )
-            
-            # If we still don't have a message, use the whole body
-            if not message:
-                message = str(request_body)
-                
-        except json.JSONDecodeError:
-            # If JSON parsing fails, use the raw text
-            message = raw_text
-            logger.info("Using raw text as message")
+        logger.info(f"Extracted first_name: {first_name}, fishing_location: {fishing_location}")
         
-        logger.info(f"Final message to process: {message}")
-        
-        if not message:
-            raise HTTPException(
-                status_code=400,
-                detail="I couldn't understand that. Could you try saying something like: 'My name is John and I fish on Long Island Sound'"
-            )
-        
-        # Convert to lowercase for parsing
-        message_lower = message.lower()
-        
-        # Extract name
-        first_name = None
-        if "name is" in message_lower:
-            name_part = message_lower.split("name is")[1]
-            # Split on common separators with spaces to avoid partial matches
-            for separator in [" and ", ", ", ". ", " i ", " like "]:
-                if separator in name_part:
-                    name_part = name_part.split(separator)[0]
-            first_name = name_part.strip().title()
-        
-        logger.info(f"Extracted name: {first_name}")
-        
-        # Extract location
-        fishing_location = None
-        if "fish" in message_lower:
-            for prep in [" on ", " in ", " at "]:
-                if prep in message_lower:
-                    loc_part = message_lower.split(prep)[1].strip()
-                    # Handle location with state/region
-                    parts = loc_part.split(",")
-                    fishing_location = parts[0].strip().title()
-                    if len(parts) > 1:
-                        fishing_location += ", " + parts[1].strip().title()
-                    break
-        
-        logger.info(f"Extracted location: {fishing_location}")
-        
-        # Validate extracted data
+        # Validate the data
         if not first_name or not fishing_location:
-            logger.error(f"Failed to extract required fields. Name: {first_name}, Location: {fishing_location}")
+            logger.error("Missing required fields")
             raise HTTPException(
                 status_code=400,
-                detail="I couldn't catch your name or fishing location. Please try saying something like: 'My name is John and I fish on Long Island Sound'"
+                detail="Please provide both your first name and fishing location"
             )
         
-        # Try to save to database but don't fail if it doesn't work
-        try:
-            save_result = save_user_info(first_name, fishing_location)
-            if not save_result:
-                logger.warning("Database save failed but continuing")
-        except Exception as e:
-            logger.error(f"Database error: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            # Continue even if database save fails
+        # Try to save user info to database
+        logger.info("Attempting to save user info to database")
+        save_result = save_user_info(first_name, fishing_location)
+        logger.info(f"Save result: {save_result}")
         
-        # Return success response
-        response_message = f"Hey {first_name}! Great to meet you. I know {fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
-        logger.info(f"Sending response: {response_message}")
-        return {"message": response_message}
-        
+        if save_result:
+            response_message = f"Hey {first_name}! Great to meet you. I know {fishing_location} well - that's a fine spot for striped bass fishing. Let me help you figure out the best times to fish there based on the moon and tides."
+            logger.info(f"Successfully processed request. Returning message: {response_message}")
+            return {
+                "message": response_message
+            }
+        else:
+            logger.error("Failed to save user information")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save user information to database"
+            )
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid JSON format in request body"
+        )
+    except ValueError as e:
+        logger.error(f"Validation error: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        logger.error(f"Full traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
-            detail="I'm having trouble understanding that. Could you try saying something like: 'My name is John and I fish on Long Island Sound'"
+            detail=f"An unexpected error occurred while processing your information. Please try again."
         )
 
 @app.get("/test/route")
